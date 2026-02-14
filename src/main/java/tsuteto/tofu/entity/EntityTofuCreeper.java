@@ -1,323 +1,139 @@
 package tsuteto.tofu.entity;
 
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.SharedMonsterAttributes;
-import net.minecraft.entity.ai.*;
-import net.minecraft.entity.effect.EntityLightningBolt;
-import net.minecraft.entity.monster.EntityMob;
-import net.minecraft.entity.monster.EntitySkeleton;
-import net.minecraft.entity.passive.EntityOcelot;
-import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.init.Blocks;
-import net.minecraft.item.Item;
-import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.util.DamageSource;
-import net.minecraft.world.World;
-import tsuteto.tofu.Settings;
-import tsuteto.tofu.init.TcBlocks;
-import tsuteto.tofu.init.TcEntity;
+import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.ServerLevelAccessor;
 import tsuteto.tofu.init.TcItems;
 
-public class EntityTofuCreeper extends EntityMob
-{
-    private int lastActiveTime;
-    private int timeSinceIgnited;
-    private int fuseTime = 30;
-    private float explosionRadius = 1.5F;
-    private long es;
+/**
+ * A tofu-themed creeper that is slightly weaker than a normal creeper.
+ * On explosion, it scatters various tofu items around the area instead of
+ * causing a normal explosion. The terrain is not destroyed.
+ */
+public class EntityTofuCreeper extends Creeper {
 
-    public EntityTofuCreeper(World par1World)
-    {
-        super(par1World);
-        this.tasks.addTask(1, new EntityAISwimming(this));
-        this.tasks.addTask(2, new EntityAITofuCreeperSwell(this));
-        this.tasks.addTask(3, new EntityAIAvoidEntity(this, EntityOcelot.class, 6.0F, 1.0D, 1.2D));
-        this.tasks.addTask(4, new EntityAIAttackOnCollide(this, 1.0D, false));
-        this.tasks.addTask(5, new EntityAIWander(this, 0.8D));
-        this.tasks.addTask(6, new EntityAIWatchClosest(this, EntityPlayer.class, 8.0F));
-        this.tasks.addTask(6, new EntityAILookIdle(this));
-        this.targetTasks.addTask(1, new EntityAINearestAttackableTarget(this, EntityPlayer.class, 0, true));
-        this.targetTasks.addTask(2, new EntityAIHurtByTarget(this, false));
-    }
+    /** Explosion power for the tofu creeper (weaker than normal creeper's 3.0) */
+    private static final float TOFU_EXPLOSION_POWER = 2.0F;
 
-    @Override
-    protected void applyEntityAttributes()
-    {
-        super.applyEntityAttributes();
-        this.getEntityAttribute(SharedMonsterAttributes.maxHealth).setBaseValue(2.0D);
-        this.getEntityAttribute(SharedMonsterAttributes.movementSpeed).setBaseValue(0.25D);
+    /** Number of tofu items scattered on explosion */
+    private static final int MIN_SCATTER_ITEMS = 4;
+    private static final int MAX_SCATTER_ITEMS = 10;
+
+    public EntityTofuCreeper(EntityType<? extends EntityTofuCreeper> type, Level level) {
+        super(type, level);
     }
 
     /**
-     * Returns true if the newer Entity AI code should be run
+     * Creates the attribute supplier for tofu creeper entities.
+     * Slightly weaker than normal creepers with less health.
      */
-    @Override
-    public boolean isAIEnabled()
-    {
-        return true;
-    }
-
-    public int getMaxSafePointTries()
-    {
-        return this.getAttackTarget() == null ? 3 : 3 + (int)(this.getHealth() - 1.0F);
-    }
-
-    /**
-     * Called when the mob is falling. Calculates and applies fall damage.
-     */
-    @Override
-    protected void fall(float par1)
-    {
-        super.fall(par1);
-        this.timeSinceIgnited = (int)(this.timeSinceIgnited + par1 * 1.5F);
-
-        if (this.timeSinceIgnited > this.fuseTime - 5)
-        {
-            this.timeSinceIgnited = this.fuseTime - 5;
-        }
+    public static AttributeSupplier.Builder createAttributes() {
+        return Monster.createMonsterAttributes()
+                .add(Attributes.MAX_HEALTH, 16.0D)  // Normal creeper has 20
+                .add(Attributes.MOVEMENT_SPEED, 0.25D)
+                .add(Attributes.FOLLOW_RANGE, 32.0D);
     }
 
     @Override
-    protected void entityInit()
-    {
-        super.entityInit();
-        this.dataWatcher.addObject(16, Byte.valueOf((byte) -1));
-        this.dataWatcher.addObject(17, Byte.valueOf((byte)0));
-    }
+    protected void explodeCreeper() {
+        if (!this.level().isClientSide()) {
+            Level level = this.level();
+            float explosionPower = this.isPowered() ? TOFU_EXPLOSION_POWER * 1.5F : TOFU_EXPLOSION_POWER;
 
-    /**
-     * (abstract) Protected helper method to write subclass entity data to NBT.
-     */
-    @Override
-    public void writeEntityToNBT(NBTTagCompound par1NBTTagCompound)
-    {
-        super.writeEntityToNBT(par1NBTTagCompound);
+            // Play explosion sound and cause knockback without terrain damage
+            level.explode(this, this.getX(), this.getY(), this.getZ(),
+                    explosionPower, Level.ExplosionInteraction.NONE);
 
-        if (this.dataWatcher.getWatchableObjectByte(17) == 1)
-        {
-            par1NBTTagCompound.setBoolean("powered", true);
-        }
+            // Scatter tofu items
+            scatterTofuItems(level);
 
-        par1NBTTagCompound.setShort("Fuse", (short) this.fuseTime);
-        par1NBTTagCompound.setFloat("ExplosionRadius", this.explosionRadius);
-    }
-
-    /**
-     * (abstract) Protected helper method to read subclass entity data from NBT.
-     */
-    @Override
-    public void readEntityFromNBT(NBTTagCompound par1NBTTagCompound)
-    {
-        super.readEntityFromNBT(par1NBTTagCompound);
-        this.dataWatcher.updateObject(17, Byte.valueOf((byte) (par1NBTTagCompound.getBoolean("powered") ? 1 : 0)));
-
-        if (par1NBTTagCompound.hasKey("Fuse"))
-        {
-            this.fuseTime = par1NBTTagCompound.getShort("Fuse");
-        }
-
-        if (par1NBTTagCompound.hasKey("ExplosionRadius"))
-        {
-            this.explosionRadius = par1NBTTagCompound.getFloat("ExplosionRadius");
+            // Discard the entity after exploding
+            this.discard();
         }
     }
 
     /**
-     * Called to update the entity's position/logic.
+     * Scatters various tofu items around the explosion area.
      */
-    @Override
-    public void onUpdate()
-    {
-        if (this.isEntityAlive())
-        {
-            this.lastActiveTime = this.timeSinceIgnited;
-            int i = this.getCreeperState();
+    private void scatterTofuItems(Level level) {
+        int itemCount = MIN_SCATTER_ITEMS + this.random.nextInt(MAX_SCATTER_ITEMS - MIN_SCATTER_ITEMS + 1);
 
-            if (i > 0 && this.timeSinceIgnited == 0)
-            {
-                this.playSound("random.fuse", 1.0F, 0.5F);
-            }
-
-            this.timeSinceIgnited += i;
-
-            if (this.timeSinceIgnited < 0)
-            {
-                this.timeSinceIgnited = 0;
-            }
-
-            if (this.timeSinceIgnited >= this.fuseTime)
-            {
-                this.timeSinceIgnited = this.fuseTime;
-
-                //for (i = 0; i < 200; i++)
-                //{
-                    //Entity splash = new EntityTofuSplash(worldObj, this);
-                    //worldObj.spawnEntityInWorld(splash);
-                //}
-
-                int r = getPowered() ? 6 : 2;
-
-                this.buildTofu((int)this.posX, (int)this.posY, (int)this.posZ, r, this.worldObj);
-                this.worldObj.spawnParticle("hugeexplosion", this.posX + r, this.posY, this.posZ, 1.0D, 0.0D, 0.0D);
-                this.worldObj.spawnParticle("hugeexplosion", this.posX - r, this.posY, this.posZ, 1.0D, 0.0D, 0.0D);
-                this.worldObj.spawnParticle("hugeexplosion", this.posX, this.posY, this.posZ + r, 1.0D, 0.0D, 0.0D);
-                this.worldObj.spawnParticle("hugeexplosion", this.posX, this.posY, this.posZ - r, 1.0D, 0.0D, 0.0D);
-                this.worldObj.playSoundEffect(this.posX, this.posY, this.posZ, "random.explode", 4.0F, (1.0F + (this.worldObj.rand.nextFloat() - this.worldObj.rand.nextFloat()) * 0.2F) * 0.7F);
-                this.setDead();
-            }
+        // Additional items if powered
+        if (this.isPowered()) {
+            itemCount += 4;
         }
 
-        super.onUpdate();
-    }
+        for (int i = 0; i < itemCount; i++) {
+            ItemStack tofuItem = getRandomTofuDrop();
 
-    @Override
-    public boolean getCanSpawnHere()
-    {
-        if (this.dimension == Settings.tofuDimNo)
-        {
-            return super.getCanSpawnHere();
-        }
-        else
-        {
-            int[] bid = getSpawnBiomeIds(this.worldObj);
-            int bidHere = worldObj.getBiomeGenForCoords((int)this.posX, (int)this.posZ).biomeID;
-            if (bidHere == bid[0] || bidHere == bid[1])
-            {
-                return super.getCanSpawnHere();
-            }
-            else
-            {
-                return false;
-            }
-        }
-    }
+            double offsetX = (this.random.nextDouble() - 0.5D) * 4.0D;
+            double offsetY = this.random.nextDouble() * 2.0D + 0.5D;
+            double offsetZ = (this.random.nextDouble() - 0.5D) * 4.0D;
 
-    public static int[] getSpawnBiomeIds(World world)
-    {
-        int[] idx = TofuCreeperSeed.instance().getSpawnId(world, TcEntity.allBiomesList.length);
-        for (int i = 0; i < idx.length; i++)
-        {
-            idx[i] = TcEntity.allBiomesList[idx[i]].biomeID;
+            ItemEntity itemEntity = new ItemEntity(level,
+                    this.getX() + offsetX,
+                    this.getY() + offsetY,
+                    this.getZ() + offsetZ,
+                    tofuItem);
+
+            // Give the items some velocity to scatter them
+            itemEntity.setDeltaMovement(
+                    (this.random.nextDouble() - 0.5D) * 0.3D,
+                    this.random.nextDouble() * 0.4D + 0.1D,
+                    (this.random.nextDouble() - 0.5D) * 0.3D);
+            itemEntity.setDefaultPickUpDelay();
+
+            level.addFreshEntity(itemEntity);
         }
-        return idx;
-    }
-    
-    /**
-     * Returns the sound this mob makes when it is hurt.
-     */
-    @Override
-    public String getHurtSound()
-    {
-        return "mob.creeper.say";
     }
 
     /**
-     * Returns the sound this mob makes on death.
+     * Returns a random tofu item to scatter during the explosion.
      */
-    @Override
-    public String getDeathSound()
-    {
-        return "mob.creeper.death";
-    }
+    private ItemStack getRandomTofuDrop() {
+        int roll = this.random.nextInt(100);
 
-    /**
-     * Called when the mob's health reaches 0.
-     */
-    @Override
-    public void onDeath(DamageSource par1DamageSource)
-    {
-        super.onDeath(par1DamageSource);
-
-        if (par1DamageSource.getEntity() instanceof EntitySkeleton)
-        {
-            this.dropItem(TcItems.tofuCake, 1);
+        if (roll < 25) {
+            // 25% - Kinu tofu food (1-3)
+            return new ItemStack(TcItems.TOFU_KINU_FOOD.get(), 1 + this.random.nextInt(3));
+        } else if (roll < 45) {
+            // 20% - Momen tofu food (1-3)
+            return new ItemStack(TcItems.TOFU_MOMEN_FOOD.get(), 1 + this.random.nextInt(3));
+        } else if (roll < 60) {
+            // 15% - Grilled tofu food (1-2)
+            return new ItemStack(TcItems.TOFU_GRILLED_FOOD.get(), 1 + this.random.nextInt(2));
+        } else if (roll < 72) {
+            // 12% - Fried tofu food (1-2)
+            return new ItemStack(TcItems.TOFU_FRIED_FOOD.get(), 1 + this.random.nextInt(2));
+        } else if (roll < 82) {
+            // 10% - Soybeans (1-4)
+            return new ItemStack(TcItems.SOYBEANS.get(), 1 + this.random.nextInt(4));
+        } else if (roll < 90) {
+            // 8% - Tofu stick
+            return new ItemStack(TcItems.TOFU_STICK.get(), 1);
+        } else if (roll < 96) {
+            // 6% - Nigari
+            return new ItemStack(TcItems.NIGARI.get(), 1);
+        } else {
+            // 4% - Zunda
+            return new ItemStack(TcItems.ZUNDA.get(), 1);
         }
     }
 
     @Override
-    public boolean attackEntityAsMob(Entity par1Entity)
-    {
-        return true;
-    }
-
-    /**
-     * Returns true if the creeper is powered by a lightning bolt.
-     */
-    public boolean getPowered()
-    {
-        return this.dataWatcher.getWatchableObjectByte(17) == 1;
-    }
-
-    @SideOnly(Side.CLIENT)
-
-    /**
-     * Params: (Float)Render tick. Returns the intensity of the creeper's flash when it is ignited.
-     */
-    public float getCreeperFlashIntensity(float par1)
-    {
-        return (this.lastActiveTime + (this.timeSinceIgnited - this.lastActiveTime) * par1) / (this.fuseTime - 2);
-    }
-
-    /**
-     * Returns the item ID for the item the mob drops on death.
-     */
-    @Override
-    protected Item getDropItem()
-    {
-        return TcItems.tofuKinu;
-    }
-
-    /**
-     * Returns the current state of creeper, -1 is idle, 1 is 'in fuse'
-     */
-    public int getCreeperState()
-    {
-        return this.dataWatcher.getWatchableObjectByte(16);
-    }
-
-    /**
-     * Sets the state of creeper, -1 to idle and 1 to be 'in fuse'
-     */
-    public void setCreeperState(int par1)
-    {
-        this.dataWatcher.updateObject(16, Byte.valueOf((byte)par1));
-    }
-
-    /**
-     * Called when a lightning bolt hits the entity.
-     */
-    @Override
-    public void onStruckByLightning(EntityLightningBolt par1EntityLightningBolt)
-    {
-        //super.onStruckByLightning(par1EntityLightningBolt);
-        this.dealFireDamage(1);
-
-        this.dataWatcher.updateObject(17, Byte.valueOf((byte)1));
-    }
-
-    protected void buildTofu(int ox, int oy, int oz, int height, World par1World)
-    {
-        int blockY, radius, blockX, relX;
-        radius = 1 + height / 2;
-
-        for (blockY = oy; blockY <= oy + height; ++blockY)
-        {
-            for (blockX = ox - radius; blockX <= ox + radius; ++blockX)
-            {
-                relX = blockX - ox;
-
-                for (int blockZ = oz - radius; blockZ <= oz + radius; ++blockZ)
-                {
-                    int relZ = blockZ - oz;
-
-                    if (par1World.getBlock(blockX, blockY, blockZ) != Blocks.mob_spawner)
-                    {
-                        par1World.setBlock(blockX, blockY, blockZ, TcBlocks.tofuMomen, 0, 3);
-                    }
-                }
-            }
-        }
+    protected float getDeathKnockback() {
+        // Slightly less knockback on death than normal creeper
+        return 0.5F;
     }
 }
