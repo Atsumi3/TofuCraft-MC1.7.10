@@ -1,0 +1,11 @@
+{
+  "tofu_bugle": {
+    "subtitle": "sound.tofucraft.tofu_bugle",
+    "sounds": [
+      {
+        "name": "tofucraft:tofu_bugle",
+        "stream": false
+      }
+    ]
+  }
+}

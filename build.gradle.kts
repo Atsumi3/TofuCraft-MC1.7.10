@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    kotlin("jvm") version property("kotlin_version").toString()
     id("net.neoforged.moddev") version "2.0.78-beta"
 }
 
@@ -16,6 +17,10 @@ base {
 }
 
 java.toolchain.languageVersion.set(JavaLanguageVersion.of(project.property("java_version") as String))
+
+kotlin {
+    jvmToolchain(project.property("java_version").toString().toInt())
+}
 
 neoForge {
     version = project.property("neo_version") as String
@@ -53,10 +58,17 @@ neoForge {
 sourceSets.main.get().resources.srcDir("src/generated/resources")
 
 dependencies {
+    implementation(kotlin("stdlib"))
 }
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    }
 }
 
 tasks.withType<ProcessResources>().configureEach {
